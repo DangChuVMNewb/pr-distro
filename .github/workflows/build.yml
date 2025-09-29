@@ -1,117 +1,124 @@
-name: Build Ubuntu Chroot (Multi-Arch) and Update ubuntuc.sh
+name: "Build Ubuntu RootFS"
+run-name: >
+  ${{ github.event_name == 'push' && format('Commit: {0}', github.event.head_commit.message) 
+  || github.event_name == 'pull_request' && format('PR: {0}', github.event.pull_request.title) 
+  || format('Manual build: {0}', github.event.inputs.distributions) }}
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: write  # cần push file và tạo release
+    inputs:
+      distributions:
+        description: 'Space-separated list of distributions to build'
+        required: true
+        default: 'ubuntu'
+  push:
+    branches:
+      - master
+    paths:
+      - 'distro-build/**'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    env:
-      DISTRO_NAME: ubuntu
-      DISTRO_VERSION: plucky
-      ROOTFS_DIR: ./output
-      WORKDIR: ./work
-
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v5
         with:
-          persist-credentials: true
+          fetch-depth: 0
 
-      - name: Install dependencies
+      - name: 🧾 Prepare Distribution List
         run: |
-          sudo apt update -y
-          sudo apt install -y \
-            mmdebstrap qemu-user-static binfmt-support \
-            debootstrap apt-utils dialog wget curl \
-            ca-certificates gnupg lsb-release locales sudo jq gh fakeroot fakechroot
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "${{ github.event.inputs.distributions }}" > ./distributions.txt
+          else
+            git diff-tree --no-commit-id --name-only HEAD -r | grep distro-build | sed 's@\(distro-build/\|.sh\)@@g' > ./distributions.txt
+          fi
+          echo "Building distros:"
+          cat ./distributions.txt
 
-      - name: Build rootfs for all architectures
+      - name: 🧩 Install Dependencies
         run: |
-          set -e
-          mkdir -p "${ROOTFS_DIR}" "${WORKDIR}"
-          ARCHS=("arm64" "amd64" "armhf")
+          sudo apt-get update -y
+          sudo apt-get install -y mmdebstrap xz-utils curl jq binfmt-support qemu-user-static
 
+      - name: 🏗️ Build RootFS for All Architectures
+        run: |
+          mkdir -p rootfs work distro-plugins
+
+          DIST_NAME="ubuntu"
+          DIST_VERSION="plucky"
+          RELEASE_DIR="rootfs"
+
+          ARCHS=("amd64" "arm64" "armhf" "i386" "riscv64")
           for ARCH in "${ARCHS[@]}"; do
             echo "============================="
-            echo "🏗️ Building rootfs for $ARCH"
+            echo "🏗️ Building rootfs for ${ARCH}"
             echo "============================="
 
-            OUT_FILE="${ROOTFS_DIR}/${DISTRO_NAME}-${DISTRO_VERSION}-${ARCH}.tar.xz"
-            WORK_DIR="${WORKDIR}/${DISTRO_NAME}-${DISTRO_VERSION}-${ARCH}"
+            case $ARCH in
+              amd64)
+                MIRROR="http://archive.ubuntu.com/ubuntu"
+                ;;
+              *)
+                MIRROR="http://ports.ubuntu.com/ubuntu-ports"
+                ;;
+            esac
 
-            sudo rm -rf "${WORK_DIR}"
-            mkdir -p "${WORK_DIR}"
+            ROOTFS_DIR="work/${DIST_NAME}-${DIST_VERSION}-${ARCH}"
+            TARBALL="${RELEASE_DIR}/${DIST_NAME}-${DIST_VERSION}-${ARCH}.tar.xz"
+
+            sudo rm -rf "${ROOTFS_DIR}" "${TARBALL}"
 
             sudo mmdebstrap \
-              --architectures="${ARCH}" \
-              --variant=minbase \
               --mode=fakechroot \
-              --include="sudo,curl,wget,nano,vim,ca-certificates,net-tools,iproute2,locales,tzdata,bash-completion,lsb-release,apt-utils,dialog,tree" \
-              "${DISTRO_VERSION}" "${WORK_DIR}" "http://archive.ubuntu.com/ubuntu/"
+              --variant=apt \
+              --architectures=${ARCH} \
+              --include="bash,apt,dialog,nano,wget,curl,tree,ca-certificates,apt-utils" \
+              ${DIST_VERSION} \
+              "${ROOTFS_DIR}" \
+              "${MIRROR}"
 
-            sudo rm -rf "${WORK_DIR}/var/cache/apt/archives/"*
-            sudo tar -C "${WORK_DIR}" -cJf "${OUT_FILE}" .
+            sudo tar -C "${ROOTFS_DIR}" -cJf "${TARBALL}" .
+            SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
+            echo "✅ Built ${TARBALL} (${SHA256})"
 
-            echo "✅ Finished building ${OUT_FILE}"
+            # Create distro plugin for each arch
+            PLUGIN_FILE="distro-plugins/ubuntuc-${ARCH}.sh"
+            cat > "${PLUGIN_FILE}" <<EOF
+# Auto-generated Ubuntu ${DIST_VERSION} plugin for ${ARCH}
+DISTRO_NAME="Ubuntu (${DIST_VERSION})"
+DISTRO_COMMENT="Regular release (${DIST_VERSION})."
+
+TARBALL_URL['${ARCH}']="https://github.com/${{ github.repository }}/releases/latest/download/${DIST_NAME}-${DIST_VERSION}-${ARCH}.tar.xz"
+TARBALL_SHA256['${ARCH}']="${SHA256}"
+
+distro_setup() {
+    run_proot_cmd apt update -y
+    run_proot_cmd apt upgrade -y
+    run_proot_cmd apt install nano wget curl tree dialog apt-utils -y
+    run_proot_cmd cp /etc/skel/.bashrc .
+}
+EOF
           done
 
-      - name: Calculate SHA256 for all files
-        id: sha
-        run: |
-          set -e
-          declare -A SHA_MAP
-          for f in ./output/*.tar.xz; do
-            name=$(basename "$f")
-            arch=$(echo "$name" | grep -oE '(arm64|amd64|armhf)')
-            sha=$(sha256sum "$f" | awk '{print $1}')
-            echo "$arch: $sha"
-            echo "SHA_${arch^^}=$sha" >> $GITHUB_ENV
-          done
-
-      - name: Create or Update GitHub Release
-        id: release
-        uses: softprops/action-gh-release@v2
+      - name: 📦 Upload Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ubuntuc-latest
-          name: Ubuntu RootFS Latest
-          body: |
-            🧩 Ubuntu (plucky) multi-arch rootfs built by GitHub Actions
-            ✅ Architectures: arm64, amd64, armhf
-          files: ./output/*.tar.xz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: built-rootfs
+          path: rootfs/*.tar.xz
 
-      - name: Get download URLs
-        id: urls
-        run: |
-          JSON=$(gh release view ubuntuc-latest --json assets --jq '.assets[] | {name: .name, url: .browser_download_url}')
-          echo "$JSON" > urls.json
+      - name: 📦 Upload Plugins
+        uses: actions/upload-artifact@v4
+        with:
+          name: distro-plugins
+          path: distro-plugins/*.sh
 
-          for arch in arm64 amd64 armhf; do
-            URL=$(jq -r "select(.name | contains(\"${arch}\")) | .url" urls.json)
-            echo "URL_${arch^^}=$URL" >> $GITHUB_ENV
-          done
-
-      - name: Update ubuntuc.sh with new URLs & SHAs
-        run: |
-          sed -i "s|{{URL_ARM64}}|${URL_ARM64}|g" ubuntuc.sh
-          sed -i "s|{{SHA_ARM64}}|${SHA_ARM64}|g" ubuntuc.sh
-
-          sed -i "s|{{URL_AMD64}}|${URL_AMD64}|g" ubuntuc.sh
-          sed -i "s|{{SHA_AMD64}}|${SHA_AMD64}|g" ubuntuc.sh
-
-          sed -i "s|{{URL_ARMHF}}|${URL_ARMHF}|g" ubuntuc.sh
-          sed -i "s|{{SHA_ARMHF}}|${SHA_ARMHF}|g" ubuntuc.sh
-
-      - name: Commit and Push updated ubuntuc.sh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ubuntuc.sh
-          git commit -m "Update ubuntuc.sh with latest URLs and SHA256"
-          git push
+      - name: 🚀 Upload to Release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master'
+        with:
+          tag_name: "v${{ github.run_number }}"
+          name: "RootFS Build ${{ github.run_number }}"
+          files: |
+            rootfs/*.tar.xz
+            distro-plugins/*.sh
