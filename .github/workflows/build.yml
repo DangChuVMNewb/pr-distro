@@ -28,7 +28,7 @@ jobs:
           sudo apt install -y \
             mmdebstrap qemu-user-static binfmt-support \
             debootstrap apt-utils dialog wget curl \
-            ca-certificates gnupg lsb-release locales sudo jq gh
+            ca-certificates gnupg lsb-release locales sudo jq gh fakeroot fakechroot
 
       - name: Build rootfs for all architectures
         run: |
@@ -50,6 +50,7 @@ jobs:
             sudo mmdebstrap \
               --architectures="${ARCH}" \
               --variant=minbase \
+              --mode=fakechroot \
               --include="sudo,curl,wget,nano,vim,ca-certificates,net-tools,iproute2,locales,tzdata,bash-completion,lsb-release,apt-utils,dialog,tree" \
               "${DISTRO_VERSION}" "${WORK_DIR}" "http://archive.ubuntu.com/ubuntu/"
 
