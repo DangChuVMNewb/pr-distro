@@ -1,0 +1,116 @@
+name: Build Ubuntu Chroot (Multi-Arch) and Update ubuntuc.sh
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # cần push file và tạo release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DISTRO_NAME: ubuntu
+      DISTRO_VERSION: plucky
+      ROOTFS_DIR: ./output
+      WORKDIR: ./work
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install -y \
+            mmdebstrap qemu-user-static binfmt-support \
+            debootstrap apt-utils dialog wget curl \
+            ca-certificates gnupg lsb-release locales sudo jq gh
+
+      - name: Build rootfs for all architectures
+        run: |
+          set -e
+          mkdir -p "${ROOTFS_DIR}" "${WORKDIR}"
+          ARCHS=("arm64" "amd64" "armhf")
+
+          for ARCH in "${ARCHS[@]}"; do
+            echo "============================="
+            echo "🏗️ Building rootfs for $ARCH"
+            echo "============================="
+
+            OUT_FILE="${ROOTFS_DIR}/${DISTRO_NAME}-${DISTRO_VERSION}-${ARCH}.tar.xz"
+            WORK_DIR="${WORKDIR}/${DISTRO_NAME}-${DISTRO_VERSION}-${ARCH}"
+
+            sudo rm -rf "${WORK_DIR}"
+            mkdir -p "${WORK_DIR}"
+
+            sudo mmdebstrap \
+              --architectures="${ARCH}" \
+              --variant=minbase \
+              --include="sudo,curl,wget,nano,vim,ca-certificates,net-tools,iproute2,locales,tzdata,bash-completion,lsb-release,apt-utils,dialog,tree" \
+              "${DISTRO_VERSION}" "${WORK_DIR}" "http://archive.ubuntu.com/ubuntu/"
+
+            sudo rm -rf "${WORK_DIR}/var/cache/apt/archives/"*
+            sudo tar -C "${WORK_DIR}" -cJf "${OUT_FILE}" .
+
+            echo "✅ Finished building ${OUT_FILE}"
+          done
+
+      - name: Calculate SHA256 for all files
+        id: sha
+        run: |
+          set -e
+          declare -A SHA_MAP
+          for f in ./output/*.tar.xz; do
+            name=$(basename "$f")
+            arch=$(echo "$name" | grep -oE '(arm64|amd64|armhf)')
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            echo "$arch: $sha"
+            echo "SHA_${arch^^}=$sha" >> $GITHUB_ENV
+          done
+
+      - name: Create or Update GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ubuntuc-latest
+          name: Ubuntu RootFS Latest
+          body: |
+            🧩 Ubuntu (plucky) multi-arch rootfs built by GitHub Actions
+            ✅ Architectures: arm64, amd64, armhf
+          files: ./output/*.tar.xz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get download URLs
+        id: urls
+        run: |
+          JSON=$(gh release view ubuntuc-latest --json assets --jq '.assets[] | {name: .name, url: .browser_download_url}')
+          echo "$JSON" > urls.json
+
+          for arch in arm64 amd64 armhf; do
+            URL=$(jq -r "select(.name | contains(\"${arch}\")) | .url" urls.json)
+            echo "URL_${arch^^}=$URL" >> $GITHUB_ENV
+          done
+
+      - name: Update ubuntuc.sh with new URLs & SHAs
+        run: |
+          sed -i "s|{{URL_ARM64}}|${URL_ARM64}|g" ubuntuc.sh
+          sed -i "s|{{SHA_ARM64}}|${SHA_ARM64}|g" ubuntuc.sh
+
+          sed -i "s|{{URL_AMD64}}|${URL_AMD64}|g" ubuntuc.sh
+          sed -i "s|{{SHA_AMD64}}|${SHA_AMD64}|g" ubuntuc.sh
+
+          sed -i "s|{{URL_ARMHF}}|${URL_ARMHF}|g" ubuntuc.sh
+          sed -i "s|{{SHA_ARMHF}}|${SHA_ARMHF}|g" ubuntuc.sh
+
+      - name: Commit and Push updated ubuntuc.sh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ubuntuc.sh
+          git commit -m "Update ubuntuc.sh with latest URLs and SHA256"
+          git push
