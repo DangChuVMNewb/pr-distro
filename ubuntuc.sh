@@ -4,7 +4,7 @@
 DISTRO_NAME="Ubuntu (25.04)"
 DISTRO_COMMENT="Regular release (plucky)."
 
-TARBALL_URL['aarch64']="http://localhost:8000/ubuntu-plucky-rootfs.tar.gz"
+TARBALL_URL['aarch64']="https://github.com/DangChuVMNewb/pr-distro/releases/download/v1.0.0/ubuntu-plucky-rootfs.tar.gz"
 TARBALL_SHA256['aarch64']="06be4ed560557c6fcea5c55f66b771f1a56e98a95b411175f1618e5563e1968f"
 
 distro_setup() {
