@@ -9,7 +9,7 @@ fi
 
 # Đường dẫn cấu hình
 PD_PATH="/data/data/com.termux/files/usr/etc/proot-distro"
-DISTRO_SCRIPT="ubuntuc.sh"
+DISTRO_SCRIPT="plucky.sh"
 URL="https://github.com/DangChuVMNewb/pr-distro/raw/refs/heads/main/${DISTRO_SCRIPT}"
 
 # Tạo thư mục nếu chưa có
