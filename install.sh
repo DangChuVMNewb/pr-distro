@@ -21,7 +21,7 @@ if [ ! -f "${PD_PATH}/${DISTRO_SCRIPT}" ]; then
 fi
 
 # Cài đặt Ubuntu tùy chỉnh
-proot-distro install ubuntuc
+proot-distro install plucky
 
 # Thông báo hoàn tất
 echo "✅ Đã cài xong ubuntuc!"
