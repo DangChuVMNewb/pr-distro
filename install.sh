@@ -24,4 +24,4 @@ fi
 proot-distro install plucky
 
 # Thông báo hoàn tất
-echo "✅ Đã cài xong ubuntuc!"
+echo "✅ Đã cài xong plucky!"
